@@ -320,7 +320,7 @@ struct Control {
     enum class mode {
         WORK, IDLE, STOP
     };
-    std::vector<mode> modes{NUM_THREADS, mode::IDLE};
+    std::array<std::atomic<mode>, NUM_THREADS> modes;
 };
 
 void job(size_t p, Game& game, Control& control) {
@@ -342,6 +342,8 @@ void job(size_t p, Game& game, Control& control) {
                 control.cv_main.notify_one();
                 lock.lock(); // see above
             }
+            // lock.unlock();
+            // lock.lock();
             // std::cerr << "worker going to sleep" << std::endl;
             control.cv_workers.wait(lock, [&]{return control.modes[p]!=Control::mode::IDLE;});
             // std::cerr << "worker waking up" << std::endl;
@@ -353,7 +355,10 @@ int main() {
     // initialize
     Game game;
     Control control;
-
+    for (size_t p = 0; p<NUM_THREADS; ++p) {
+        control.modes[p] = Control::mode::IDLE;
+    }
+    
     // spawn workers
     std::vector<std::thread> threads;
     for (size_t p = 0; p<NUM_THREADS; ++p) {
