@@ -303,7 +303,7 @@ thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
 constexpr size_t NUM_ITERATIONS = 1<<4;
-constexpr size_t MAX_ITERATIONS = 1<<21;
+constexpr size_t MAX_ITERATIONS = 1<<24;
 
 
 template<typename T>
