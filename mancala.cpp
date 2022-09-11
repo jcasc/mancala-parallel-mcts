@@ -191,7 +191,7 @@ struct Game {
 
     void move() {
         uint8_t best = select();
-        tree = std::move(tree->children.at(best));
+        tree = std::unique_ptr<Node>(std::move(tree->children.at(best)));
     }
 
     void move(uint8_t selection) {
@@ -204,7 +204,7 @@ struct Game {
         --move_idx;
 
         if (tree->children.size() > move_idx) {
-            tree = std::move(tree->children.at(move_idx));
+            tree = std::unique_ptr<Node>(std::move(tree->children.at(move_idx)));
         } else {
             tree = std::make_unique<Node>(*tree, selection);
         }
