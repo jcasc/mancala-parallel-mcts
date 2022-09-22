@@ -318,34 +318,62 @@ struct Control {
     std::atomic<size_t> pending = 0;
     size_t active = NUM_THREADS;
     enum class mode {
-        WORK, IDLE, STOP
+        WORK, STOP
     };
-    std::array<std::atomic<mode>, NUM_THREADS> modes;
+    std::atomic<mode> mode = Control::mode::WORK;
+    size_t cycle = 1;
 };
 
+// void job(size_t p, Game& game, Control& control) {
+//     while (control.modes[p] != Control::mode::STOP) {
+//         if (control.modes[p] == Control::mode::WORK) {
+//             size_t _pending = control.pending;
+//             if (_pending == 0) {
+//                 control.modes[p] = Control::mode::IDLE;
+//             }
+//             else if (control.pending.compare_exchange_weak(_pending, _pending-1)) {
+//                 game.explore();
+//             } // else (CAS fails): continue while-loop
+//         } else {
+//             std::unique_lock lock(control.mx);
+//             --control.active;
+//             // std::cerr << "active: " << control.active << std::endl;
+//             if (control.active == 0) {
+//                 lock.unlock(); // unlock manually so main doesn't need to wait
+//                 control.cv_main.notify_one();
+//                 lock.lock(); // see above
+//             }
+//             // lock.unlock();
+//             // lock.lock();
+//             // std::cerr << "worker going to sleep" << std::endl;
+//             control.cv_workers.wait(lock, [&]{return control.modes[p]!=Control::mode::IDLE;});
+//             // std::cerr << "worker waking up" << std::endl;
+//         }
+//     }
+// }
+
+
 void job(size_t p, Game& game, Control& control) {
-    while (control.modes[p] != Control::mode::STOP) {
-        if (control.modes[p] == Control::mode::WORK) {
-            size_t _pending = control.pending;
-            if (_pending == 0) {
-                control.modes[p] = Control::mode::IDLE;
-            }
-            else if (control.pending.compare_exchange_weak(_pending, _pending-1)) {
+    size_t _cycle = 0;
+    while (control.mode != Control::mode::STOP) {
+        size_t _pending = control.pending;
+        if (_pending > 0) {
+            if (control.pending.compare_exchange_weak(_pending, _pending-1)) {
                 game.explore();
-            } // else (CAS fails): continue while-loop
+            }
         } else {
+            ++_cycle;
             std::unique_lock lock(control.mx);
             --control.active;
             // std::cerr << "active: " << control.active << std::endl;
             if (control.active == 0) {
                 lock.unlock(); // unlock manually so main doesn't need to wait
                 control.cv_main.notify_one();
+                
                 lock.lock(); // see above
             }
-            // lock.unlock();
-            // lock.lock();
             // std::cerr << "worker going to sleep" << std::endl;
-            control.cv_workers.wait(lock, [&]{return control.modes[p]!=Control::mode::IDLE;});
+            control.cv_workers.wait(lock, [&]{return control.mode==Control::mode::STOP || control.cycle!=_cycle;});
             // std::cerr << "worker waking up" << std::endl;
         }
     }
@@ -355,9 +383,6 @@ int main() {
     // initialize
     Game game;
     Control control;
-    for (size_t p = 0; p<NUM_THREADS; ++p) {
-        control.modes[p] = Control::mode::IDLE;
-    }
     
     // spawn workers
     std::vector<std::thread> threads;
@@ -377,38 +402,40 @@ int main() {
             std::unique_lock lock(control.mx);
             control.active = NUM_THREADS;
             control.pending = NUM_ITERATIONS;
-            for (auto& m: control.modes)
-                m = Control::mode::WORK;
+            ++control.cycle;
+            
             lock.unlock();
             control.cv_workers.notify_all();
+            
             lock.lock();
             control.cv_main.wait(lock, [&]{return control.active == 0;});
+            
             std::cout << "CPU's move: " << int(game.select()) << " Nodes: " << game.tree->stats.load().total << std::endl;
             game.move();
         } else { // player's turn
             std::unique_lock lock(control.mx);
             control.active = NUM_THREADS;
             control.pending = MAX_ITERATIONS;
-            for (auto& m: control.modes)
-                m = Control::mode::WORK;
+            ++control.cycle;
+            
             lock.unlock();
             control.cv_workers.notify_all();
 
             int in;
             std::cout << "YOUR MOVE: ";
             std::cin >> in;
-            for (auto& m: control.modes)
-                m = Control::mode::IDLE;
+            control.pending = 0;
+            
             lock.lock();
             // std::cerr << "main going to sleep" << std::endl;
             control.cv_main.wait(lock, [&]{return control.active == 0;});
             // std::cerr << "main waking up" << std::endl;
+            
             game.move(in);
         }
     }
     std::unique_lock lock(control.mx);
-    for (auto& m: control.modes)
-        m = Control::mode::STOP;
+    control.mode = Control::mode::STOP;
     lock.unlock();
     control.cv_workers.notify_all();
     for (auto& t: threads)
