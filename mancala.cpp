@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <cmath>
 #include <random>
 #include <thread>
@@ -21,12 +22,12 @@ struct state {
     };
 
     std::array<uint8_t, 14> fields = {b, b, b, b, b, b, 0, b, b, b, b, b, b, 0};
-    player p = 0;
+    player p = 1;
     status_t status = status_t::P; 
 
     
     void print() const {
-        std::cout << "p1 "; 
+        std::cout << "   "; 
         for (uint8_t f = 12; f >= 7; --f) {
             std::cout << (fields[f]<10?" ":"") << int(fields[f]) << " ";
         }
@@ -39,7 +40,7 @@ struct state {
         for (uint8_t f = 0; f < 6; ++f) {
             std::cout << (fields[f]<10?" ":"") << int(fields[f]) << " ";
         }
-        std::cout << "p0\n" << std::endl;
+        std::cout << "  \n" << std::endl;
     }
 
     bool is_valid(uint8_t field) const {
@@ -124,7 +125,7 @@ struct Node {
     Board board;
 
     struct statistics {uint32_t total, p0score;};
-    std::mutex lock;
+    std::shared_mutex lock;
     std::atomic<uint8_t> expansion;
     std::atomic<statistics> stats;
     std::vector<std::unique_ptr<Node>> children;
@@ -219,7 +220,7 @@ struct Game {
             if (cur->expansion==255) {
                 cur = cur->children.at(selection).get();
             } else {
-                std::lock_guard<std::mutex> lg(cur->lock);
+                std::shared_lock lg(cur->lock);
                 cur = cur->children.at(selection).get();
             }
             Node::statistics expected = cur->stats;
@@ -268,7 +269,7 @@ struct Game {
             case(Board::status_t::P): // node just wasn't expanded yet
                 Node* rollout;
                 {
-                    std::lock_guard<std::mutex> lg(cur->lock);
+                    std::unique_lock lg(cur->lock);
                     // std::cerr << "acquired lock" << std::endl;
                     uint8_t next = cur->expansion;
                     if (next==255) continue;
@@ -291,6 +292,9 @@ struct Game {
                 break;
             case(Board::status_t::D): // node is terminal (draw)
                 result = std::uniform_int_distribution<>(0,1)(rng);
+                break;
+            default:
+                // should never be reached
                 break;
             }
             done = true;
@@ -323,34 +327,6 @@ struct Control {
     std::atomic<mode> mode = Control::mode::WORK;
     size_t cycle = 1;
 };
-
-// void job(size_t p, Game& game, Control& control) {
-//     while (control.modes[p] != Control::mode::STOP) {
-//         if (control.modes[p] == Control::mode::WORK) {
-//             size_t _pending = control.pending;
-//             if (_pending == 0) {
-//                 control.modes[p] = Control::mode::IDLE;
-//             }
-//             else if (control.pending.compare_exchange_weak(_pending, _pending-1)) {
-//                 game.explore();
-//             } // else (CAS fails): continue while-loop
-//         } else {
-//             std::unique_lock lock(control.mx);
-//             --control.active;
-//             // std::cerr << "active: " << control.active << std::endl;
-//             if (control.active == 0) {
-//                 lock.unlock(); // unlock manually so main doesn't need to wait
-//                 control.cv_main.notify_one();
-//                 lock.lock(); // see above
-//             }
-//             // lock.unlock();
-//             // lock.lock();
-//             // std::cerr << "worker going to sleep" << std::endl;
-//             control.cv_workers.wait(lock, [&]{return control.modes[p]!=Control::mode::IDLE;});
-//             // std::cerr << "worker waking up" << std::endl;
-//         }
-//     }
-// }
 
 
 void job(size_t p, Game& game, Control& control) {
@@ -396,7 +372,7 @@ int main() {
     // using namespace std::chrono_literals;
     // std::this_thread::sleep_for(2000ms);
     while (game.tree->board.status == Board::status_t::P) {
-        std::cerr << "Nodes: " << game.tree->stats.load().total << std::endl;
+        std::cerr << "Results: " << game.tree->stats.load().total << '\n' << std::endl;
         game.tree->board.print();
         if (game.tree->board.p) { // CPU TURN
             std::unique_lock lock(control.mx);
@@ -410,7 +386,7 @@ int main() {
             lock.lock();
             control.cv_main.wait(lock, [&]{return control.active == 0;});
             
-            std::cout << "CPU's move: " << int(game.select()) << " Nodes: " << game.tree->stats.load().total << std::endl;
+            std::cout << "CPU's move: " << int(game.select()) << " (of possible moves) \n" << std::endl;
             game.move();
         } else { // player's turn
             std::unique_lock lock(control.mx);
@@ -422,7 +398,7 @@ int main() {
             control.cv_workers.notify_all();
 
             int in;
-            std::cout << "YOUR MOVE: ";
+            std::cout << "---------------------------\nYOUR MOVE: ";
             std::cin >> in;
             control.pending = 0;
             
