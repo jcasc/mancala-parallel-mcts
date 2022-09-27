@@ -193,6 +193,7 @@ struct Game {
                 max_idx = i;
             }
         }
+        // std::cerr << "SELECTED: " << max << std::endl;
         return max_idx;
     }
 
@@ -312,8 +313,8 @@ struct Game {
 thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
-constexpr size_t NUM_ITERATIONS = 1<<23;
-constexpr size_t MAX_ITERATIONS = 1<<24;
+constexpr size_t NUM_ITERATIONS = (1<<22) * std::min(1., NUM_THREADS/16.);
+constexpr size_t MAX_ITERATIONS = 1<<23;
 
 
 template<typename T>
@@ -366,7 +367,7 @@ int main(int argc, char* argv[]) {
     Game game;
     game.tree->board.p = (argc>1 && argv[1][0]=='1');
     Control control;
-    
+
     // spawn workers
     std::vector<std::thread> threads;
     for (size_t p = 0; p<NUM_THREADS; ++p) {
@@ -380,6 +381,13 @@ int main(int argc, char* argv[]) {
     // std::this_thread::sleep_for(2000ms);
     while (game.tree->board.status == Board::status_t::P) {
         std::cerr << "Results: " << game.tree->stats.load().total << '\n' << std::endl;
+        // std::cerr << std::endl;
+        // auto parent_stats = game.tree->stats.load();
+        // for (const auto& i: game.tree->children) {
+        //     auto child_stats = i->stats.load();
+        //     std::cerr << "[" << child_stats.p0score << " " << child_stats.total << " " << double(game.tree->board.p?child_stats.total-child_stats.p0score:child_stats.p0score) / child_stats.total << " " << std::sqrt(2*std::log(parent_stats.total)/child_stats.total) 
+        //     << " " << double(game.tree->board.p?child_stats.total-child_stats.p0score:child_stats.p0score) / child_stats.total + std::sqrt(2*std::log(parent_stats.total)/child_stats.total)  << "] " << std::endl;
+        // }
         game.tree->board.print();
         if (game.tree->board.p) { // CPU TURN
             std::unique_lock lock(control.mx);
@@ -393,6 +401,12 @@ int main(int argc, char* argv[]) {
             lock.lock();
             control.cv_main.wait(lock, [&]{return control.active == 0;});
             
+            // auto parent_stats = game.tree->stats.load();
+            // for (const auto& i: game.tree->children) {
+            // auto child_stats = i->stats.load();
+            // std::cerr << "[" << child_stats.p0score << " " << child_stats.total << " " << double(game.tree->board.p?child_stats.total-child_stats.p0score:child_stats.p0score) / child_stats.total << " " << std::sqrt(2*std::log(parent_stats.total)/child_stats.total) 
+            //           << " " << double(game.tree->board.p?child_stats.total-child_stats.p0score:child_stats.p0score) / child_stats.total + std::sqrt(2*std::log(parent_stats.total)/child_stats.total)  << "] " << std::endl;
+            // }
             game.move();
             std::cout << "CPU's move: " << int(game.tree->last_move) << "\n" << std::endl;
         } else { // player's turn
