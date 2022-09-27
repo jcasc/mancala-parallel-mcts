@@ -22,7 +22,7 @@ struct state {
     };
 
     std::array<uint8_t, 14> fields = {b, b, b, b, b, b, 0, b, b, b, b, b, b, 0};
-    player p = 1;
+    player p = 0;
     status_t status = status_t::P; 
 
     
@@ -114,6 +114,11 @@ struct state {
             else {
                 status = status_t::D;
             }
+            sum0+=fields[6];
+            sum1+=fields[13];
+            fields.fill(0);
+            fields[6]=sum0;
+            fields[13]=sum1;
         }
     }
 
@@ -122,18 +127,19 @@ struct state {
 using Board = state<4>;
 
 struct Node {
-    Board board;
-
+    std::shared_mutex mtx;
     struct statistics {uint32_t total, p0score;};
-    std::shared_mutex lock;
-    std::atomic<uint8_t> expansion;
     std::atomic<statistics> stats;
-    std::vector<std::unique_ptr<Node>> children;
     
-    Node() : expansion(0), stats({0,0}) {
+    std::vector<std::unique_ptr<Node>> children;
+    Board board;
+    std::atomic<uint8_t> expansion;
+    uint8_t last_move = 255;
+    
+    Node() : stats({0,0}), expansion(0) {
         // children.reserve(10);
     }
-    Node(const Node& other, uint8_t move) : board(other.board), expansion(0), stats({0,0}) {
+    Node(const Node& other, uint8_t move) : stats({0,0}), board(other.board), expansion(0), last_move(move) {
         board.move(move);
         // children.reserve(10);
     }
@@ -157,7 +163,7 @@ struct Game {
                 max_idx = std::uniform_int_distribution<>(0, c->children.size()-1)(rng);
             } else {
                 for (uint8_t i = 0; i<c->children.size(); ++i) {
-                    Node* child = c->children.at(i).get();
+                    Node* child = c->children[i].get();
                     Node::statistics child_stats = child->stats;
                     if (child_stats.total == 0) {
                         max_idx = i;
@@ -172,7 +178,7 @@ struct Game {
                     }
                 }
             }
-            c = c->children.at(max_idx).get();
+            c = c->children[max_idx].get();
             path.emplace_back(max_idx);
         }
     }
@@ -181,7 +187,7 @@ struct Game {
         uint32_t max = 0;
         uint8_t max_idx = 0;
         for (uint8_t i = 0; i<tree->children.size(); ++i) {
-            uint32_t visits = tree->children.at(i)->stats.load().total;
+            uint32_t visits = tree->children[i]->stats.load().total;
             if (visits>max) {
                 max = visits;
                 max_idx = i;
@@ -192,7 +198,7 @@ struct Game {
 
     void move() {
         uint8_t best = select();
-        tree = std::unique_ptr<Node>(std::move(tree->children.at(best)));
+        tree = std::unique_ptr<Node>(std::move(tree->children[best]));
     }
 
     void move(uint8_t selection) {
@@ -205,7 +211,7 @@ struct Game {
         --move_idx;
 
         if (tree->children.size() > move_idx) {
-            tree = std::unique_ptr<Node>(std::move(tree->children.at(move_idx)));
+            tree = std::unique_ptr<Node>(std::move(tree->children[move_idx]));
         } else {
             tree = std::make_unique<Node>(*tree, selection);
         }
@@ -218,10 +224,10 @@ struct Game {
         
         for (uint8_t selection: path) {
             if (cur->expansion==255) {
-                cur = cur->children.at(selection).get();
+                cur = cur->children[selection].get();
             } else {
-                std::shared_lock lg(cur->lock);
-                cur = cur->children.at(selection).get();
+                std::shared_lock lg(cur->mtx);
+                cur = cur->children[selection].get();
             }
             Node::statistics expected = cur->stats;
             while(!cur->stats.compare_exchange_weak(expected, {expected.total+1, expected.p0score+result}));
@@ -240,13 +246,13 @@ struct Game {
                     ++size;
                 }
             }
-            b.move(choices[std::uniform_int_distribution<>(0,size-1)(rng)]);
+            b.move(choices[std::uniform_int_distribution(0,size-1)(rng)]);
         }
         switch (b.status) {
             case(Board::status_t::W):
                 return !b.p;
             case(Board::status_t::D):
-                return std::uniform_int_distribution<>(0,1)(rng);
+                return std::uniform_int_distribution(0,1)(rng);
             default:
                 return 0; // should never happen
         }
@@ -269,7 +275,7 @@ struct Game {
             case(Board::status_t::P): // node just wasn't expanded yet
                 Node* rollout;
                 {
-                    std::unique_lock lg(cur->lock);
+                    std::unique_lock lg(cur->mtx);
                     // std::cerr << "acquired lock" << std::endl;
                     uint8_t next = cur->expansion;
                     if (next==255) continue;
@@ -291,7 +297,7 @@ struct Game {
                 result = !cur->board.p;
                 break;
             case(Board::status_t::D): // node is terminal (draw)
-                result = std::uniform_int_distribution<>(0,1)(rng);
+                result = std::uniform_int_distribution(0,1)(rng);
                 break;
             default:
                 // should never be reached
@@ -306,7 +312,7 @@ struct Game {
 thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
-constexpr size_t NUM_ITERATIONS = 1<<4;
+constexpr size_t NUM_ITERATIONS = 1<<23;
 constexpr size_t MAX_ITERATIONS = 1<<24;
 
 
@@ -355,9 +361,10 @@ void job(size_t p, Game& game, Control& control) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     // initialize
     Game game;
+    game.tree->board.p = (argc>1 && argv[1][0]=='1');
     Control control;
     
     // spawn workers
@@ -386,8 +393,8 @@ int main() {
             lock.lock();
             control.cv_main.wait(lock, [&]{return control.active == 0;});
             
-            std::cout << "CPU's move: " << int(game.select()) << " (of possible moves) \n" << std::endl;
             game.move();
+            std::cout << "CPU's move: " << int(game.tree->last_move) << "\n" << std::endl;
         } else { // player's turn
             std::unique_lock lock(control.mx);
             control.active = NUM_THREADS;
@@ -417,5 +424,6 @@ int main() {
     for (auto& t: threads)
         t.join();
 
+    game.tree->board.print();
     std::cerr << "done." << std::endl;
 }
