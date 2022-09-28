@@ -138,13 +138,13 @@ struct Node {
     
     std::vector<std::unique_ptr<Node>> children;
     Board board;
-    std::atomic<uint8_t> expansion;
+    std::atomic_bool expansion;
     uint8_t last_move = 255;
     
-    Node() : stats({0,0}), expansion(0) {
+    Node() : stats({0,0}), expansion(false) {
         // children.reserve(10);
     }
-    Node(const Node& other, uint8_t move) : stats({0,0}), board(other.board), expansion(0), last_move(move) {
+    Node(const Node& other, uint8_t move) : stats({0,0}), board(other.board), expansion(false), last_move(move) {
         board.move(move);
         // children.reserve(10);
     }
@@ -160,7 +160,7 @@ struct Game {
     static thread_local std::mt19937_64 rng;
 
     void traverse(Node*& c, std::vector<uint8_t>& path) const {
-        while (c->expansion == 255) {
+        while (c->expansion.load()) {
             Node::statistics parent_stats = c->stats;
             uint8_t max_idx = 0;
             double max_ucb = 0.0;
@@ -168,7 +168,7 @@ struct Game {
                 max_idx = std::uniform_int_distribution<>(0, c->children.size()-1)(rng);
             } else {
                 for (uint8_t i = 0; i<c->children.size(); ++i) {
-                    Node* child = c->children[i].get();
+                    Node* child = c->children.at(i).get();
                     Node::statistics child_stats = child->stats;
                     if (child_stats.total == 0) {
                         max_idx = i;
@@ -183,7 +183,7 @@ struct Game {
                     }
                 }
             }
-            c = c->children[max_idx].get();
+            c = c->children.at(max_idx).get();
             path.emplace_back(max_idx);
         }
     }
@@ -192,7 +192,7 @@ struct Game {
         uint32_t max = 0;
         uint8_t max_idx = 0;
         for (uint8_t i = 0; i<tree->children.size(); ++i) {
-            uint32_t visits = tree->children[i]->stats.load().total;
+            uint32_t visits = tree->children.at(i)->stats.load().total;
             if (visits>max) {
                 max = visits;
                 max_idx = i;
@@ -206,7 +206,7 @@ struct Game {
         if (tree->children.empty())
             return;
         uint8_t best = select();
-        tree = std::unique_ptr<Node>(std::move(tree->children[best]));
+        tree = std::unique_ptr<Node>(std::move(tree->children.at(best)));
     }
 
     void move(uint8_t selection) {
@@ -229,11 +229,11 @@ struct Game {
         while(!cur->stats.compare_exchange_weak(expected, {expected.total+1, expected.p0score+result}));
         
         for (uint8_t selection: path) {
-            if (cur->expansion==255) {
-                cur = cur->children[selection].get();
+            if (cur->expansion.load()) {
+                cur = cur->children.at(selection).get();
             } else {
                 std::shared_lock lg(cur->mtx);
-                cur = cur->children[selection].get();
+                cur = cur->children.at(selection).get();
             }
             Node::statistics expected = cur->stats;
             while(!cur->stats.compare_exchange_weak(expected, {expected.total+1, expected.p0score+result}));
@@ -283,24 +283,24 @@ struct Game {
                 {
                     std::unique_lock lg(cur->mtx);
                     
-                    if (cur->expansion==255) continue;
+                    if (cur->expansion.load()) continue;
                     std::array<uint8_t, 6> moves;
                     auto mmask = cur->board.move_mask();
                     std::copy(mmask, mmask+6, moves.data());
 
                     for (const auto& c: cur->children)
-                        moves[c->last_move] = 0;
+                        moves.at(c->last_move) = 0;
 
                     uint8_t n_moves = 0;
                     for (uint8_t i=0;i<6;++i)
-                        if (moves[i]) moves[n_moves++] = i;
+                        if (moves.at(i)) moves.at(n_moves++) = i;
 
                     if (n_moves>1) {
                         uint8_t next = std::uniform_int_distribution<>(0, n_moves-1)(rng);
-                        rollout = (cur->children.emplace_back(std::make_unique<Node>(*cur, moves[next]))).get();
+                        rollout = (cur->children.emplace_back(std::make_unique<Node>(*cur, moves.at(next)))).get();
                     } else {
-                        rollout = (cur->children.emplace_back(std::make_unique<Node>(*cur, moves[0]))).get();
-                        cur->expansion = 255;
+                        rollout = (cur->children.emplace_back(std::make_unique<Node>(*cur, moves.at(0)))).get();
+                        cur->expansion = true;
                     }
                     path.emplace_back(cur->children.size()-1);
                 }
@@ -325,8 +325,8 @@ struct Game {
 thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
-constexpr size_t NUM_ITERATIONS = (1<<23) * std::min(1., NUM_THREADS/16.);
-constexpr size_t MAX_ITERATIONS = 1<<23;
+constexpr size_t NUM_ITERATIONS = (1<<22) * std::min(1., NUM_THREADS/16.);
+constexpr size_t MAX_ITERATIONS = 1<<24;
 
 
 template<typename T>
@@ -442,9 +442,7 @@ int main(int argc, char* argv[]) {
             while(_pending>1 && !control.pending.compare_exchange_weak(_pending, 1));
             
             lock.lock();
-            // std::cerr << "main going to sleep" << std::endl;
             control.cv_main.wait(lock, [&]{return control.active == 0;});
-            // std::cerr << "main waking up" << std::endl;
             
             game.move(in);
         }
