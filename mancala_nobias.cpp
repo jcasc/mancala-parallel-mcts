@@ -325,8 +325,8 @@ struct Game {
 thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
-constexpr size_t NUM_ITERATIONS = (1<<22) * std::min(1., NUM_THREADS/16.);
-constexpr size_t MAX_ITERATIONS = 1<<24;
+constexpr size_t NUM_ITERATIONS = (1<<18) * std::min(1., NUM_THREADS/16.);
+constexpr size_t MAX_ITERATIONS = 1<<23;
 
 
 template<typename T>
@@ -379,9 +379,12 @@ void job(size_t p, Game& game, Control& control) {
     }
 }
 
-int main(int argc, char* argv[]) {
+void play(int argc, char* argv[]) {
     // initialize
     Game game;
+    #ifdef DEBUG
+        game.rng.seed((std::random_device())());
+    #endif
     game.tree->board.p = (argc>1 && argv[1][0]=='1');
     Control control;
 
@@ -436,8 +439,22 @@ int main(int argc, char* argv[]) {
             control.cv_workers.notify_all();
 
             int in;
-            std::cout << "---------------------------\nYOUR MOVE: ";
-            std::cin >> in;
+            std::cout << "---------------------------\nYOUR MOVE: " << std::flush;
+            #ifdef DEBUG
+                {
+                    using namespace std::chrono_literals;
+                    std::this_thread::sleep_for(0.1s);
+                }
+                std::array<uint8_t, 6> choices;
+                std::copy(game.tree->board.move_mask(), game.tree->board.move_mask()+6, choices.data());
+                uint8_t n_moves = 0;
+                for (uint8_t i=0;i<6;++i)
+                    if (choices[i]) choices[n_moves++] = i;
+                in = choices[std::uniform_int_distribution(0, n_moves-1)(game.rng)];
+                std::cout << int(in) << std::endl;
+            #else
+                std::cin >> in;
+            #endif
             auto _pending = control.pending.load();
             while(_pending>1 && !control.pending.compare_exchange_weak(_pending, 1));
             
@@ -456,4 +473,15 @@ int main(int argc, char* argv[]) {
 
     game.tree->board.print();
     std::cerr << "done." << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    std::cerr << std::random_device()() << std::endl;
+    std::cerr << std::random_device()() << std::endl;
+    std::cerr << std::random_device()() << std::endl;
+    std::cerr << std::random_device()() << std::endl;
+    std::cerr << std::random_device()() << std::endl;
+    std::cerr << std::random_device()() << std::endl;
+    while(true)
+        play(argc, argv);
 }
