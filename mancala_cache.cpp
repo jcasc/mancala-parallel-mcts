@@ -164,6 +164,9 @@ struct Node {
 
         return *this;
     }
+    
+    Node(const Node&) = delete;
+    Node& operator=(const Node&) = delete;
 
     // ~Node() {
     //     std::cerr << "destroyed" << std::endl;
