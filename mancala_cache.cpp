@@ -246,7 +246,6 @@ struct Game {
         Node* cur = &tree;
         Node::statistics expected = cur->stats;
         while(!cur->stats.compare_exchange_weak(expected, {expected.total+1, expected.p0score+result}));
-        
         for (uint8_t selection: path) {
             if (cur->expansion==255) {
                 cur = &(cur->children[selection]);
@@ -257,6 +256,7 @@ struct Game {
                 cur = &(cur->children[selection]);
                 Node::statistics expected = cur->stats;
                 while(!cur->stats.compare_exchange_weak(expected, {expected.total+1, expected.p0score+result}));
+                return;
             }
         }
     }
@@ -339,8 +339,8 @@ struct Game {
 thread_local std::mt19937_64 Game::rng;
 
 constexpr size_t NUM_THREADS = 16;
-constexpr size_t NUM_ITERATIONS = (1<<22) * std::min(1., NUM_THREADS/16.);
-constexpr size_t MAX_ITERATIONS = 1<<23;
+constexpr size_t NUM_ITERATIONS = (1<<20) * std::min(1., NUM_THREADS/16.);
+constexpr size_t MAX_ITERATIONS = 1<<21;
 
 
 template<typename T>
